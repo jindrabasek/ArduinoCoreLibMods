@@ -59,7 +59,7 @@ static volatile uint8_t twi_rxBufferIndex;
 
 static volatile uint8_t twi_error;
 
-#define TWI_OPERATION_TIMEOUT_MS 1000
+#define TWI_OPERATION_TIMEOUT_MS 500
 
 /* 
  * Function twi_init
@@ -260,11 +260,12 @@ uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait
     // send start condition
     TWCR = _BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE) | _BV(TWSTA);	// enable INTs
 
-  long start = millis();
+  unsigned long start = millis();
   // wait for write operation to complete
-  long passed = 0;
+  unsigned long passed = 0;
   while(wait && (TWI_MTX == twi_state)){
-    passed = start - millis();
+    unsigned long time = millis();
+    passed = time < start ? (4294967295L - start) + time : time - start;
     if (passed > TWI_OPERATION_TIMEOUT_MS) {
         break;
     }
