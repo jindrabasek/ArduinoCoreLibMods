@@ -27,9 +27,14 @@ extern "C" {
 }
 
 #include "Wire.h"
+
+#include <defines.h>
+
+#ifdef USE_CONCURENCY
 #include <Scheduler/Semaphore.h>
 
 static Semaphore lock;
+#endif
 
 // Initialize Class Variables //////////////////////////////////////////////////
 
@@ -142,7 +147,9 @@ uint8_t TwoWire::requestFrom(int address, int quantity, int sendStop)
 
 void TwoWire::beginTransmission(uint8_t address)
 {
+#ifdef USE_CONCURENCY
   lock.wait();
+#endif
   // indicate that we are transmitting
   transmitting = 1;
   // set address of targeted slave
@@ -179,9 +186,11 @@ uint8_t TwoWire::endTransmission(uint8_t sendStop)
   txBufferLength = 0;
   // indicate that we are done transmitting
   transmitting = 0;
+#ifdef USE_CONCURENCY
   if (sendStop) {
       lock.increase();
   }
+#endif
   return ret;
 }
 
