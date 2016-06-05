@@ -59,7 +59,7 @@ static volatile uint8_t twi_rxBufferIndex;
 
 static volatile uint8_t twi_error;
 
-#define TWI_OPERATION_TIMEOUT_MS 500
+#define TWI_OPERATION_TIMEOUT_MS 1500
 
 /* 
  * Function twi_init
@@ -139,10 +139,18 @@ uint8_t twi_readFrom(uint8_t address, uint8_t* data, uint8_t length, uint8_t sen
     return 0;
   }
 
-  // wait until twi is ready, become master receiver
+  unsigned long start = millis();
+  unsigned long passed = 0;
+  // wait until twi is ready, become master transmitter
   while(TWI_READY != twi_state){
+    unsigned long time = millis();
+    passed = time < start ? (4294967295L - start) + time : time - start;
+    if (passed > TWI_OPERATION_TIMEOUT_MS) {
+        return 0;
+    }
     continue;
   }
+
   twi_state = TWI_MRX;
   twi_sendStop = sendStop;
   // reset error state (0xFF.. no error occured)
@@ -178,8 +186,15 @@ uint8_t twi_readFrom(uint8_t address, uint8_t* data, uint8_t length, uint8_t sen
     // send start condition
     TWCR = _BV(TWEN) | _BV(TWIE) | _BV(TWEA) | _BV(TWINT) | _BV(TWSTA);
 
+  start = millis();
   // wait for read operation to complete
+  passed = 0;
   while(TWI_MRX == twi_state){
+    unsigned long time = millis();
+    passed = time < start ? (4294967295L - start) + time : time - start;
+    if (passed > TWI_OPERATION_TIMEOUT_MS) {
+        break;
+    }
     continue;
   }
 
@@ -218,10 +233,18 @@ uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait
     return 1;
   }
 
+  unsigned long start = millis();
+  unsigned long passed = 0;
   // wait until twi is ready, become master transmitter
   while(TWI_READY != twi_state){
+    unsigned long time = millis();
+    passed = time < start ? (4294967295L - start) + time : time - start;
+    if (passed > TWI_OPERATION_TIMEOUT_MS) {
+        return 5;
+    }
     continue;
   }
+
   twi_state = TWI_MTX;
   twi_sendStop = sendStop;
   // reset error state (0xFF.. no error occured)
@@ -260,9 +283,9 @@ uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait
     // send start condition
     TWCR = _BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE) | _BV(TWSTA);	// enable INTs
 
-  unsigned long start = millis();
+  start = millis();
   // wait for write operation to complete
-  unsigned long passed = 0;
+  passed = 0;
   while(wait && (TWI_MTX == twi_state)){
     unsigned long time = millis();
     passed = time < start ? (4294967295L - start) + time : time - start;
