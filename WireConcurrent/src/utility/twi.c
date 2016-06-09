@@ -59,7 +59,7 @@ static volatile uint8_t twi_rxBufferIndex;
 
 static volatile uint8_t twi_error;
 
-#define TWI_OPERATION_TIMEOUT_MS 1500
+#define TWI_OPERATION_TIMEOUT_MS 500
 
 /* 
  * Function twi_init
@@ -144,7 +144,7 @@ uint8_t twi_readFrom(uint8_t address, uint8_t* data, uint8_t length, uint8_t sen
   // wait until twi is ready, become master transmitter
   while(TWI_READY != twi_state){
     unsigned long time = millis();
-    passed = time < start ? (4294967295L - start) + time : time - start;
+    passed = time < start ? (4294967294L - start) + time : time - start;
     if (passed > TWI_OPERATION_TIMEOUT_MS) {
         return 0;
     }
@@ -191,7 +191,7 @@ uint8_t twi_readFrom(uint8_t address, uint8_t* data, uint8_t length, uint8_t sen
   passed = 0;
   while(TWI_MRX == twi_state){
     unsigned long time = millis();
-    passed = time < start ? (4294967295L - start) + time : time - start;
+    passed = time < start ? (4294967294L - start) + time : time - start;
     if (passed > TWI_OPERATION_TIMEOUT_MS) {
         break;
     }
@@ -238,7 +238,7 @@ uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait
   // wait until twi is ready, become master transmitter
   while(TWI_READY != twi_state){
     unsigned long time = millis();
-    passed = time < start ? (4294967295L - start) + time : time - start;
+    passed = time < start ? (4294967294L - start) + time : time - start;
     if (passed > TWI_OPERATION_TIMEOUT_MS) {
         return 5;
     }
@@ -288,7 +288,7 @@ uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait
   passed = 0;
   while(wait && (TWI_MTX == twi_state)){
     unsigned long time = millis();
-    passed = time < start ? (4294967295L - start) + time : time - start;
+    passed = time < start ? (4294967294L - start) + time : time - start;
     if (passed > TWI_OPERATION_TIMEOUT_MS) {
         break;
     }
