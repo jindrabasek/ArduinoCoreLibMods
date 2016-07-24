@@ -59,7 +59,7 @@ static volatile uint8_t twi_rxBufferIndex;
 
 static volatile uint8_t twi_error;
 
-#define TWI_OPERATION_TIMEOUT_MS 100
+#define TWI_OPERATION_TIMEOUT_MS 50
 
 /* 
  * Function twi_init
