@@ -23,8 +23,10 @@ extern "C" {
   #include <stdlib.h>
   #include <string.h>
   #include <inttypes.h>
-  #include "utility/twi.h"
+
 }
+
+#include "utility/twi.h"
 
 #include "Wire.h"
 
