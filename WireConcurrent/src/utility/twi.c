@@ -38,8 +38,6 @@
 #include "pins_arduino.h"
 #include "twi.h"
 
-#include <Logger.h>
-
 static volatile uint8_t twi_state;
 static volatile uint8_t twi_slarw;
 static volatile uint8_t twi_sendStop;			// should the transaction end with a stop
@@ -60,6 +58,8 @@ static uint8_t twi_rxBuffer[TWI_BUFFER_LENGTH];
 static volatile uint8_t twi_rxBufferIndex;
 
 static volatile uint8_t twi_error;
+
+static volatile uint8_t last_restart_state = TWI_NO_RESTART;
 
 #define TWI_OPERATION_RETIRES 5000
 
@@ -123,6 +123,22 @@ void twi_setAddress(uint8_t address)
 }
 
 /* 
+ * Function twi_setClock
+ * Desc     sets twi bit rate
+ * Input    Clock Frequency
+ * Output   none
+ */
+void twi_setFrequency(uint32_t frequency)
+{
+  TWBR = ((F_CPU / frequency) - 16) / 2;
+  
+  /* twi bit rate formula from atmega128 manual pg 204
+  SCL Frequency = CPU Clock Frequency / (16 + (2 * TWBR))
+  note: TWBR should be 10 or higher for master mode
+  It is 72 for a 16mhz Wiring board with 100kHz TWI */
+}
+
+/* 
  * Function twi_readFrom
  * Desc     attempts to become twi bus master and read a
  *          series of bytes from a device on the bus
@@ -142,16 +158,17 @@ uint8_t twi_readFrom(uint8_t address, uint8_t* data, uint8_t length, uint8_t sen
   }
 
   uint16_t retries = 0;
-  // wait until twi is ready, become master transmitter
+  // wait until twi is ready, become master receiver
   while(TWI_READY != twi_state){
-    if (retries++ > TWI_OPERATION_RETIRES) {
-        LOG_WARN(F("I2C hang in readFrom start"));
-        delay(250);
-        twi_disable();
-        twi_init();
-        return 0;
-    }
-    continue;
+      if (retries++ > TWI_OPERATION_RETIRES) {
+          last_restart_state = TWI_RESTART_READ_BEGIN;
+          delayMicroseconds(5000);
+          twi_disable();
+          delayMicroseconds(5000);
+          twi_init();
+          return 5;
+      }
+     continue;
   }
 
   twi_state = TWI_MRX;
@@ -194,9 +211,10 @@ uint8_t twi_readFrom(uint8_t address, uint8_t* data, uint8_t length, uint8_t sen
   // wait for read operation to complete
   while(TWI_MRX == twi_state){
     if (retries++ > TWI_OPERATION_RETIRES) {
-        LOG_WARN(F("I2C hang in readFrom end"));
-        delay(250);
+        last_restart_state = TWI_RESTART_READ_END;
+        delayMicroseconds(5000);
         twi_disable();
+        delayMicroseconds(5000);
         twi_init();
         return 0;
     }
@@ -238,20 +256,18 @@ uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait
     return 1;
   }
 
-  unsigned long start = millis();
-  unsigned long passed = 0;
+  uint16_t retries = 0;
   // wait until twi is ready, become master transmitter
   while(TWI_READY != twi_state){
-    unsigned long time = millis();
-    passed = time < start ? (4294967294L - start) + time : time - start;
-    if (passed > TWI_OPERATION_RETIRES) {
-        LOG_WARN(F("I2C hang in writeTo start"));
-        delay(250);
-        twi_disable();
-        twi_init();
-        return 5;
-    }
-    continue;
+      if (retries++ > TWI_OPERATION_RETIRES) {
+          last_restart_state = TWI_RESTART_WRITE_BEGIN;
+          delayMicroseconds(5000);
+          twi_disable();
+          delayMicroseconds(5000);
+          twi_init();
+          return 5;
+      }
+      continue;
   }
 
   twi_state = TWI_MTX;
@@ -292,14 +308,14 @@ uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait
     // send start condition
     TWCR = _BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE) | _BV(TWSTA);	// enable INTs
 
-
-  uint16_t retries = 0;
+  retries = 0;
   // wait for write operation to complete
   while(wait && (TWI_MTX == twi_state)){
     if (retries++ > TWI_OPERATION_RETIRES) {
-        LOG_WARN(F("I2C hang in writeTo end"));
-        delay(250);
+        last_restart_state = TWI_RESTART_WRITE_END;
+        delayMicroseconds(5000);
         twi_disable();
+        delayMicroseconds(5000);
         twi_init();
         break;
     }
@@ -312,7 +328,7 @@ uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait
     return 2;	// error: address send, nack received
   else if (twi_error == TW_MT_DATA_NACK)
     return 3;	// error: data send, nack received
-  else if (passed > TWI_OPERATION_RETIRES) // error timeout sending data
+  else if (retries > TWI_OPERATION_RETIRES) // error timeout sending data
     return 5;
   else
     return 4;	// other twi error
@@ -333,7 +349,7 @@ uint8_t twi_transmit(const uint8_t* data, uint8_t length)
   uint8_t i;
 
   // ensure data will fit into buffer
-  if(TWI_BUFFER_LENGTH < length){
+  if(TWI_BUFFER_LENGTH < (twi_txBufferLength+length)){
     return 1;
   }
   
@@ -343,10 +359,10 @@ uint8_t twi_transmit(const uint8_t* data, uint8_t length)
   }
   
   // set length and copy data into tx buffer
-  twi_txBufferLength = length;
   for(i = 0; i < length; ++i){
-    twi_txBuffer[i] = data[i];
+    twi_txBuffer[twi_txBufferLength+i] = data[i];
   }
+  twi_txBufferLength += length;
   
   return 0;
 }
@@ -408,6 +424,13 @@ void twi_stop(void)
 
   // update twi state
   twi_state = TWI_READY;
+}
+
+uint8_t twi_read_last_restart_state()
+{
+    uint8_t last_restart_state_prev = last_restart_state;
+    last_restart_state = TWI_NO_RESTART;
+    return last_restart_state_prev;
 }
 
 /* 
