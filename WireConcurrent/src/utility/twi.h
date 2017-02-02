@@ -39,10 +39,18 @@
   #define TWI_STX   4
 
   #define TWI_NO_RESTART           0
-  #define TWI_RESTART_READ_BEGIN   1
-  #define TWI_RESTART_READ_END     2
-  #define TWI_RESTART_WRITE_BEGIN  3
-  #define TWI_RESTART_WRITE_END    4
+  #define TWI_READ_BEGIN           1
+  #define TWI_READ_BEGIN_END       2
+  #define TWI_READ_MIDDLE          3
+  #define TWI_READ_MIDDLE_END      4
+  #define TWI_READ_END             5
+  #define TWI_READ_END_END         6
+  #define TWI_WRITE_BEGIN          7
+  #define TWI_WRITE_BEGIN_END      8
+  #define TWI_WRITE_MIDDLE         9
+  #define TWI_WRITE_MIDDLE_END     10
+  #define TWI_WRITE_END            11
+  #define TWI_WRITE_END_END        12
   
   void twi_init(void);
   void twi_disable(void);

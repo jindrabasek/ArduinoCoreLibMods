@@ -51,10 +51,20 @@ uint8_t TwoWire::transmitting = 0;
 void (*TwoWire::user_onRequest)(void);
 void (*TwoWire::user_onReceive)(int);
 
+#ifdef LOG_TWI_STATE_TO_LEDS
+#ifndef TWI_LEDS_LOG_ENABLE_REGISTER
+#define TWI_LEDS_LOG_ENABLE_REGISTER DDRC
+#endif
+#endif
+
 // Constructors ////////////////////////////////////////////////////////////////
 
 TwoWire::TwoWire()
 {
+#ifdef LOG_TWI_STATE_TO_LEDS
+	// initialize logging
+	TWI_LEDS_LOG_ENABLE_REGISTER = 0xFF;
+#endif
 }
 
 // Public Methods //////////////////////////////////////////////////////////////

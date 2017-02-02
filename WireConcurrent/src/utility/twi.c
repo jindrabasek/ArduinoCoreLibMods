@@ -26,6 +26,7 @@
 #include <avr/interrupt.h>
 #include <compat/twi.h>
 #include "Arduino.h" // for digitalWrite
+#include <avr/wdt.h>
 
 #ifndef cbi
 #define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
@@ -59,9 +60,18 @@ static volatile uint8_t twi_rxBufferIndex;
 
 static volatile uint8_t twi_error;
 
-static volatile uint8_t last_restart_state = TWI_NO_RESTART;
+static volatile uint8_t twi_last_restart_state = TWI_NO_RESTART;
 
-#define TWI_OPERATION_RETIRES 5000
+static volatile uint16_t retries;
+static volatile uint16_t retriesIr;
+
+#define TWI_OPERATION_RETRIES 1600
+
+#ifdef LOG_TWI_STATE_TO_LEDS
+#ifndef TWI_LEDS_LOG_WRITE_REGISTER
+#define TWI_LEDS_LOG_WRITE_REGISTER PORTC
+#endif
+#endif
 
 /* 
  * Function twi_init
@@ -71,6 +81,8 @@ static volatile uint8_t last_restart_state = TWI_NO_RESTART;
  */
 void twi_init(void)
 {
+  twi_last_restart_state = TWI_NO_RESTART;
+
   // initialize state
   twi_state = TWI_READY;
   twi_sendStop = true;		// default value
@@ -150,86 +162,112 @@ void twi_setFrequency(uint32_t frequency)
  */
 uint8_t twi_readFrom(uint8_t address, uint8_t* data, uint8_t length, uint8_t sendStop)
 {
-  uint8_t i;
+	if (!twi_last_restart_state) {
+	  uint8_t i;
 
-  // ensure data will fit into buffer
-  if(TWI_BUFFER_LENGTH < length){
-    return 0;
-  }
+	  // ensure data will fit into buffer
+	  if(TWI_BUFFER_LENGTH < length){
+		return 0;
+	  }
 
-  uint16_t retries = 0;
-  // wait until twi is ready, become master receiver
-  while(TWI_READY != twi_state){
-      if (retries++ > TWI_OPERATION_RETIRES) {
-          last_restart_state = TWI_RESTART_READ_BEGIN;
-          delayMicroseconds(5000);
-          twi_disable();
-          delayMicroseconds(5000);
-          twi_init();
-          return 5;
-      }
-     continue;
-  }
-
-  twi_state = TWI_MRX;
-  twi_sendStop = sendStop;
-  // reset error state (0xFF.. no error occured)
-  twi_error = 0xFF;
-
-  // initialize buffer iteration vars
-  twi_masterBufferIndex = 0;
-  twi_masterBufferLength = length-1;  // This is not intuitive, read on...
-  // On receive, the previously configured ACK/NACK setting is transmitted in
-  // response to the received byte before the interrupt is signalled. 
-  // Therefor we must actually set NACK when the _next_ to last byte is
-  // received, causing that NACK to be sent in response to receiving the last
-  // expected byte of data.
-
-  // build sla+w, slave device address + w bit
-  twi_slarw = TW_READ;
-  twi_slarw |= address << 1;
-
-  if (true == twi_inRepStart) {
-    // if we're in the repeated start state, then we've already sent the start,
-    // (@@@ we hope), and the TWI statemachine is just waiting for the address byte.
-    // We need to remove ourselves from the repeated start state before we enable interrupts,
-    // since the ISR is ASYNC, and we could get confused if we hit the ISR before cleaning
-    // up. Also, don't enable the START interrupt. There may be one pending from the 
-    // repeated start that we sent ourselves, and that would really confuse things.
-    twi_inRepStart = false;			// remember, we're dealing with an ASYNC ISR
-    do {
-      TWDR = twi_slarw;
-    } while(TWCR & _BV(TWWC));
-    TWCR = _BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE);	// enable INTs, but not START
-  }
-  else
-    // send start condition
-    TWCR = _BV(TWEN) | _BV(TWIE) | _BV(TWEA) | _BV(TWINT) | _BV(TWSTA);
+#ifdef LOG_TWI_STATE_TO_LEDS
+	  TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_READ_BEGIN;
+#endif
+	  retries = 0;
+	  // wait until twi is ready, become master receiver
+	  while(TWI_READY != twi_state && retries++ < TWI_OPERATION_RETRIES){
+		  continue;
+	  }
+#ifdef LOG_TWI_STATE_TO_LEDS
+	  TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_READ_BEGIN_END;
+#endif
+	  if (retries >= TWI_OPERATION_RETRIES) {
+		  twi_last_restart_state = TWI_READ_BEGIN_END;
+		  return 0;
+	  }
 
 
-  retries = 0;
-  // wait for read operation to complete
-  while(TWI_MRX == twi_state){
-    if (retries++ > TWI_OPERATION_RETIRES) {
-        last_restart_state = TWI_RESTART_READ_END;
-        delayMicroseconds(5000);
-        twi_disable();
-        delayMicroseconds(5000);
-        twi_init();
-        return 0;
-    }
-    continue;
-  }
+	  twi_state = TWI_MRX;
+	  twi_sendStop = sendStop;
+	  // reset error state (0xFF.. no error occured)
+	  twi_error = 0xFF;
 
-  if (twi_masterBufferIndex < length)
-    length = twi_masterBufferIndex;
+	  // initialize buffer iteration vars
+	  twi_masterBufferIndex = 0;
+	  twi_masterBufferLength = length-1;  // This is not intuitive, read on...
+	  // On receive, the previously configured ACK/NACK setting is transmitted in
+	  // response to the received byte before the interrupt is signalled.
+	  // Therefor we must actually set NACK when the _next_ to last byte is
+	  // received, causing that NACK to be sent in response to receiving the last
+	  // expected byte of data.
 
-  // copy twi buffer to data
-  for(i = 0; i < length; ++i){
-    data[i] = twi_masterBuffer[i];
-  }
-	
-  return length;
+	  // build sla+w, slave device address + w bit
+	  twi_slarw = TW_READ;
+	  twi_slarw |= address << 1;
+
+	  if (true == twi_inRepStart) {
+		// if we're in the repeated start state, then we've already sent the start,
+		// (@@@ we hope), and the TWI statemachine is just waiting for the address byte.
+		// We need to remove ourselves from the repeated start state before we enable interrupts,
+		// since the ISR is ASYNC, and we could get confused if we hit the ISR before cleaning
+		// up. Also, don't enable the START interrupt. There may be one pending from the
+		// repeated start that we sent ourselves, and that would really confuse things.
+		twi_inRepStart = false;			// remember, we're dealing with an ASYNC ISR
+#ifdef LOG_TWI_STATE_TO_LEDS
+	    TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_READ_MIDDLE;
+#endif
+		retries = 0;
+		do {
+		  TWDR = twi_slarw;
+		} while((TWCR & _BV(TWWC)) && retries++ < TWI_OPERATION_RETRIES);
+#ifdef LOG_TWI_STATE_TO_LEDS
+	    TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_READ_MIDDLE_END;
+#endif
+		if (retries >= TWI_OPERATION_RETRIES) {
+		  twi_last_restart_state = TWI_READ_MIDDLE_END;
+		  return 0;
+		}
+		TWCR = _BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE);	// enable INTs, but not START
+	  }
+	  else {
+#ifdef LOG_TWI_STATE_TO_LEDS
+	    TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_READ_MIDDLE;
+#endif
+		// send start condition
+		TWCR = _BV(TWEN) | _BV(TWIE) | _BV(TWEA) | _BV(TWINT) | _BV(TWSTA);
+#ifdef LOG_TWI_STATE_TO_LEDS
+	    TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_READ_MIDDLE_END;
+#endif
+	  }
+
+#ifdef LOG_TWI_STATE_TO_LEDS
+	  TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_READ_END;
+#endif
+	  retries = 0;
+	  // wait for read operation to complete
+	  while(TWI_MRX == twi_state && retries++ < TWI_OPERATION_RETRIES){
+		  continue;
+	  }
+#ifdef LOG_TWI_STATE_TO_LEDS
+	  TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_READ_END_END;
+#endif
+	  if (retries >= TWI_OPERATION_RETRIES) {
+		  twi_last_restart_state = TWI_READ_END_END;
+		  return 0;
+	  }
+
+	  if (twi_masterBufferIndex < length)
+		length = twi_masterBufferIndex;
+
+	  // copy twi buffer to data
+	  for(i = 0; i < length; ++i){
+		data[i] = twi_masterBuffer[i];
+	  }
+
+	  return length;
+	} else {
+	  return 0;
+	}
 }
 
 /* 
@@ -249,89 +287,113 @@ uint8_t twi_readFrom(uint8_t address, uint8_t* data, uint8_t length, uint8_t sen
  */
 uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait, uint8_t sendStop)
 {
-  uint8_t i;
+	if (!twi_last_restart_state) {
+	  uint8_t i;
 
-  // ensure data will fit into buffer
-  if(TWI_BUFFER_LENGTH < length){
-    return 1;
-  }
+	  // ensure data will fit into buffer
+	  if(TWI_BUFFER_LENGTH < length){
+		return 1;
+	  }
 
-  uint16_t retries = 0;
-  // wait until twi is ready, become master transmitter
-  while(TWI_READY != twi_state){
-      if (retries++ > TWI_OPERATION_RETIRES) {
-          last_restart_state = TWI_RESTART_WRITE_BEGIN;
-          delayMicroseconds(5000);
-          twi_disable();
-          delayMicroseconds(5000);
-          twi_init();
-          return 5;
-      }
-      continue;
-  }
+#ifdef LOG_TWI_STATE_TO_LEDS
+	  TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_WRITE_BEGIN;
+#endif
+	  retries = 0;
+	  // wait until twi is ready, become master transmitter
+	  while(TWI_READY != twi_state && retries++ < TWI_OPERATION_RETRIES){
+		  continue;
+	  }
+#ifdef LOG_TWI_STATE_TO_LEDS
+	  TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_WRITE_BEGIN_END;
+#endif
+	  if (retries >= TWI_OPERATION_RETRIES) {
+		  twi_last_restart_state = TWI_WRITE_BEGIN_END;
+		  return 5;
+	  }
 
-  twi_state = TWI_MTX;
-  twi_sendStop = sendStop;
-  // reset error state (0xFF.. no error occured)
-  twi_error = 0xFF;
+	  twi_state = TWI_MTX;
+	  twi_sendStop = sendStop;
+	  // reset error state (0xFF.. no error occured)
+	  twi_error = 0xFF;
 
-  // initialize buffer iteration vars
-  twi_masterBufferIndex = 0;
-  twi_masterBufferLength = length;
-  
-  // copy data to twi buffer
-  for(i = 0; i < length; ++i){
-    twi_masterBuffer[i] = data[i];
-  }
-  
-  // build sla+w, slave device address + w bit
-  twi_slarw = TW_WRITE;
-  twi_slarw |= address << 1;
-  
-  // if we're in a repeated start, then we've already sent the START
-  // in the ISR. Don't do it again.
-  //
-  if (true == twi_inRepStart) {
-    // if we're in the repeated start state, then we've already sent the start,
-    // (@@@ we hope), and the TWI statemachine is just waiting for the address byte.
-    // We need to remove ourselves from the repeated start state before we enable interrupts,
-    // since the ISR is ASYNC, and we could get confused if we hit the ISR before cleaning
-    // up. Also, don't enable the START interrupt. There may be one pending from the 
-    // repeated start that we sent outselves, and that would really confuse things.
-    twi_inRepStart = false;			// remember, we're dealing with an ASYNC ISR
-    do {
-      TWDR = twi_slarw;				
-    } while(TWCR & _BV(TWWC));
-    TWCR = _BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE);	// enable INTs, but not START
-  }
-  else
-    // send start condition
-    TWCR = _BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE) | _BV(TWSTA);	// enable INTs
+	  // initialize buffer iteration vars
+	  twi_masterBufferIndex = 0;
+	  twi_masterBufferLength = length;
 
-  retries = 0;
-  // wait for write operation to complete
-  while(wait && (TWI_MTX == twi_state)){
-    if (retries++ > TWI_OPERATION_RETIRES) {
-        last_restart_state = TWI_RESTART_WRITE_END;
-        delayMicroseconds(5000);
-        twi_disable();
-        delayMicroseconds(5000);
-        twi_init();
-        break;
-    }
-    continue;
-  }
-  
-  if (twi_error == 0xFF)
-    return 0;	// success
-  else if (twi_error == TW_MT_SLA_NACK)
-    return 2;	// error: address send, nack received
-  else if (twi_error == TW_MT_DATA_NACK)
-    return 3;	// error: data send, nack received
-  else if (retries > TWI_OPERATION_RETIRES) // error timeout sending data
-    return 5;
-  else
-    return 4;	// other twi error
+	  // copy data to twi buffer
+	  for(i = 0; i < length; ++i){
+		twi_masterBuffer[i] = data[i];
+	  }
+
+	  // build sla+w, slave device address + w bit
+	  twi_slarw = TW_WRITE;
+	  twi_slarw |= address << 1;
+
+	  // if we're in a repeated start, then we've already sent the START
+	  // in the ISR. Don't do it again.
+	  //
+	  if (true == twi_inRepStart) {
+		// if we're in the repeated start state, then we've already sent the start,
+		// (@@@ we hope), and the TWI statemachine is just waiting for the address byte.
+		// We need to remove ourselves from the repeated start state before we enable interrupts,
+		// since the ISR is ASYNC, and we could get confused if we hit the ISR before cleaning
+		// up. Also, don't enable the START interrupt. There may be one pending from the
+		// repeated start that we sent outselves, and that would really confuse things.
+		twi_inRepStart = false;			// remember, we're dealing with an ASYNC ISR
+#ifdef LOG_TWI_STATE_TO_LEDS
+	    TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_WRITE_MIDDLE;
+#endif
+		retries = 0;
+		do {
+		  TWDR = twi_slarw;
+		} while((TWCR & _BV(TWWC)) && retries++ < TWI_OPERATION_RETRIES);
+#ifdef LOG_TWI_STATE_TO_LEDS
+	    TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_WRITE_MIDDLE_END;
+#endif
+		if (retries >= TWI_OPERATION_RETRIES) {
+			twi_last_restart_state = TWI_WRITE_MIDDLE_END;
+			return 5;
+		}
+		TWCR = _BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE);	// enable INTs, but not START
+	  }
+	  else {
+#ifdef LOG_TWI_STATE_TO_LEDS
+	    TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_WRITE_MIDDLE;
+#endif
+		// send start condition
+		TWCR = _BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE) | _BV(TWSTA);	// enable INTs
+#ifdef LOG_TWI_STATE_TO_LEDS
+	    TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_WRITE_MIDDLE_END;
+#endif
+	  }
+
+#ifdef LOG_TWI_STATE_TO_LEDS
+	  TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_WRITE_END;
+#endif
+	  retries = 0;
+	  // wait for write operation to complete
+	  while(wait && (TWI_MTX == twi_state) && retries++ < TWI_OPERATION_RETRIES){
+		  continue;
+	  }
+#ifdef LOG_TWI_STATE_TO_LEDS
+	  TWI_LEDS_LOG_WRITE_REGISTER = ~TWI_WRITE_END_END;
+#endif
+	  if (retries >= TWI_OPERATION_RETRIES) {
+		  twi_last_restart_state = TWI_WRITE_END_END;
+		  return 5;
+	  }
+
+	  if (twi_error == 0xFF)
+		return 0;	// success
+	  else if (twi_error == TW_MT_SLA_NACK)
+		return 2;	// error: address send, nack received
+	  else if (twi_error == TW_MT_DATA_NACK)
+		return 3;	// error: data send, nack received
+	  else
+		return 4;	// other twi error
+	} else {
+	  return 5;
+	}
 }
 
 /* 
@@ -416,21 +478,19 @@ void twi_stop(void)
   // send stop condition
   TWCR = _BV(TWEN) | _BV(TWIE) | _BV(TWEA) | _BV(TWINT) | _BV(TWSTO);
 
+  retriesIr = 0;
   // wait for stop condition to be exectued on bus
   // TWINT is not set after a stop condition!
-  while(TWCR & _BV(TWSTO)){
+  while((TWCR & _BV(TWSTO)) && retriesIr++ < TWI_OPERATION_RETRIES){
     continue;
   }
 
-  // update twi state
   twi_state = TWI_READY;
 }
 
 uint8_t twi_read_last_restart_state()
 {
-    uint8_t last_restart_state_prev = last_restart_state;
-    last_restart_state = TWI_NO_RESTART;
-    return last_restart_state_prev;
+    return twi_last_restart_state;
 }
 
 /* 
